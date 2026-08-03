@@ -205,6 +205,13 @@ def search_results(request, lang, version, per_page=10, orphans=3):
                         % {"page_number": page_number, "message": str(e)}
                     )
 
+            # Repeat the offset & limit calculation so that it can be used to
+            # limit the number of annotations.
+            start = (page_number - 1) * per_page
+            stop = min(start + per_page, paginator.count)
+            ranked_values = ranked[start:stop]
+            results = Document.objects.annotate_search_results(ranked_values, q)
+
             context.update(
                 {
                     "query": q,
