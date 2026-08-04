@@ -19,6 +19,7 @@ from django.core.cache import cache
 from django.db import models, transaction
 from django.db.models import (
     Case,
+    F,
     Q,
     When,
 )
@@ -357,36 +358,30 @@ class DocumentQuerySet(models.QuerySet):
                 base_filter &= Q(metadata__parents__startswith=document_category)
             base_qs = self.filter(base_filter).values_list("pk", flat=True)
             vector_qs = (
-                base_qs.alias(rank=search_rank)
+                base_qs.annotate(rank=search_rank)
                 .filter(search_vector=search_query)
                 .order_by("-rank", "pk")
             )
             if not vector_qs:
                 return (
-                    base_qs.alias(
+                    base_qs.annotate(
                         similarity=TrigramSimilarity(
                             "title", utils.sanitize_for_trigram(query_text)
                         )
                     )
                     .filter(similarity__gt=0.3)
                     .order_by("-similarity", "pk")
+                    .values("similarity", "pk")
                 )
             else:
-                return vector_qs
+                return vector_qs.values("rank", "pk")
         else:
             return self.none()
 
-    def annotate_search_results(self, ranked_ids, query_text, uses_trigram=False):
+    def annotate_search_results(self, ranked, query_text, uses_trigram=False):
         query_text = query_text.strip()
         search_query = SearchQuery(
             query_text, config=models.F("config"), search_type="websearch"
-        )
-        # Repeating the search rank is cheap. When CompositeFields merge, we
-        # might be able to pass through a Tuple(pk, rank).
-        search_rank = (
-            TrigramSimilarity("title", utils.sanitize_for_trigram(query_text))
-            if uses_trigram
-            else SearchRank(models.F("search_vector"), search_query)
         )
         search = partial(
             SearchHeadline,
@@ -395,8 +390,8 @@ class DocumentQuerySet(models.QuerySet):
             config=models.F("config"),
         )
         return (
-            self.filter(id__in=ranked_ids)
-            .annotate(rank=search_rank)
+            self.alias(ranked=ranked)
+            .filter(id__in=F("ranked__pk"))
             .annotate(
                 headline=search("title", search_query),
                 highlight=search(
@@ -418,7 +413,7 @@ class DocumentQuerySet(models.QuerySet):
                 "release__lang",
                 "release__release__version",
             )
-            .order_by("-rank", "pk")
+            .order_by("-ranked__rank", "pk")
         )
 
 
